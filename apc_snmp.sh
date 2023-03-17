@@ -1,5 +1,5 @@
 #!/bin/bash
-#Version 1/18/2023
+#Version 3/17/2023
 
 #############################################
 #VERIFICATIONS
@@ -30,52 +30,69 @@ email_contents="/volume1/web/logging/notifications/1st_floor_bedroom_APC_email_c
 #EMAIL SETTINGS USED IF CONFIGURATION FILE IS UNAVAILABLE, SNMP DATA IS BAD, OR IF TAGET DEVICE IS OFFLINE
 #These variables will be overwritten with new corrected data if the configuration file loads properly. 
 email_address="email@email.com"
-from_email_address="from@email.com"
+from_email_address="email@email.com"
 #########################################################
+
+#########################################################
+#this function pings google.com to confirm internet access is working prior to sending email notifications 
+#########################################################
+check_internet() {
+ping -c1 "www.google.com" > /dev/null #ping google.com									
+	local status=$?
+	if ! (exit $status); then
+		false
+	else
+		true
+	fi
+}
 
 #####################################
 #Function to send email when SNMP commands fail
 #####################################
 function SNMP_error_email(){
-	#determine when the last time a general notification email was sent out. this will make sure we send an email only every x minutes
-	current_time=$( date +%s )
-	if [ -r "$last_time_email_sent" ]; then
-		read email_time < $last_time_email_sent
-		email_time_diff=$((( $current_time - $email_time ) / 60 ))
-	else 
-		echo "$current_time" > $last_time_email_sent
-		email_time_diff=0
-	fi
+	if check_internet; then
+		#determine when the last time a general notification email was sent out. this will make sure we send an email only every x minutes
+		current_time=$( date +%s )
+		if [ -r "$last_time_email_sent" ]; then
+			read email_time < $last_time_email_sent
+			email_time_diff=$((( $current_time - $email_time ) / 60 ))
+		else 
+			echo "$current_time" > $last_time_email_sent
+			email_time_diff=0
+		fi
 
-	local now=$(date +"%T")
-	local mailbody="$now - ALERT APC UPS at IP $nas_url named \"$nas_name\" appears to have an issue with SNMP as it returned invalid data"
-	echo "from: $from_email_address " > $email_contents
-	echo "to: $email_address " >> $email_contents
-	echo "subject: ALERT APC UPS at IP $nas_url named \"$nas_name\" appears to have an issue with SNMP " >> $email_contents
-	echo "" >> $email_contents
-	echo $mailbody >> $email_contents
-			
-	if [[ "$email_address" == "" || "$from_email_address" == "" ]];then
-			echo -e "\n\nNo email address information is configured, Cannot send an email the UPS returned invalid SNMP data"
-	else
-		if [ $sendmail_installed -eq 1 ]; then	
-			if [ $email_time_diff -ge 60 ]; then
-				local email_response=$(sendmail -t < $email_contents  2>&1)
-				if [[ "$email_response" == "" ]]; then
-					echo -e "\n\nEmail Sent Successfully that the target UPS appears to have an issue with SNMP" |& tee -a $email_contents
-					snmp_error=1
-					current_time=$( date +%s )
-					echo "$current_time" > $last_time_email_sent
-					email_time_diff=0
+		local now=$(date +"%T")
+		local mailbody="$now - ALERT APC UPS at IP $nas_url named \"$nas_name\" appears to have an issue with SNMP as it returned invalid data"
+		echo "from: $from_email_address " > $email_contents
+		echo "to: $email_address " >> $email_contents
+		echo "subject: ALERT APC UPS at IP $nas_url named \"$nas_name\" appears to have an issue with SNMP " >> $email_contents
+		echo "" >> $email_contents
+		echo $mailbody >> $email_contents
+				
+		if [[ "$email_address" == "" || "$from_email_address" == "" ]];then
+				echo -e "\n\nNo email address information is configured, Cannot send an email the UPS returned invalid SNMP data"
+		else
+			if [ $sendmail_installed -eq 1 ]; then	
+				if [ $email_time_diff -ge 60 ]; then
+					local email_response=$(sendmail -t < $email_contents  2>&1)
+					if [[ "$email_response" == "" ]]; then
+						echo -e "\n\nEmail Sent Successfully that the target UPS appears to have an issue with SNMP" |& tee -a $email_contents
+						snmp_error=1
+						current_time=$( date +%s )
+						echo "$current_time" > $last_time_email_sent
+						email_time_diff=0
+					else
+						echo -e "\n\nWARNING -- An error occurred while sending Error email. The error was: $email_response\n\n" |& tee $email_contents
+					fi	
 				else
-					echo -e "\n\nWARNING -- An error occurred while sending Error email. The error was: $email_response\n\n" |& tee $email_contents
+					echo "Only $email_time_diff minuets have passed since the last notification, email will be sent every 60 minutes. $(( 60 - $email_time_diff )) Minutes Remaining Until Next Email"
 				fi	
 			else
-				echo "Only $email_time_diff minuets have passed since the last notification, email will be sent every 60 minutes. $(( 60 - $email_time_diff )) Minutes Remaining Until Next Email"
-			fi	
-		else
-			echo -e "\n\nERROR -- Could not send alert email that an error occurred getting SNMP data -- command \"sendmail\" is not available\n\n"
+				echo -e "\n\nERROR -- Could not send alert email that an error occurred getting SNMP data -- command \"sendmail\" is not available\n\n"
+			fi
 		fi
+	else
+		echo "Internet is not available, skipping sending email"
 	fi
 	exit 1
 }
@@ -355,30 +372,34 @@ if [ -r "$config_file" ]; then
 		echo "Target device at $nas_url is unavailable, skipping script"
 		now=$(date +"%T")
 		if [ $email_time_diff -ge 60 ]; then
-			#send an email indicating script config file is missing and script will not run
-			mailbody="$now - Warning UPS SNMP Monitoring Failed for device IP $nas_url - Target is Unavailable "
-			echo "from: $from_email_address " > $email_contents
-			echo "to: $email_address " >> $email_contents
-			echo "subject: Warning UPS SNMP Monitoring Failed for device IP $nas_url - Target is Unavailable " >> $email_contents
-			echo "" >> $email_contents
-			echo $mailbody >> $email_contents
-			
-			if [[ "$email_address" == "" || "$from_email_address" == "" ]];then
-				echo -e "\n\nNo email address information is configured, Cannot send an email indicating Target is Unavailable and script will not run"
-			else
-				if [ $sendmail_installed -eq 1 ]; then
-					email_response=$(sendmail -t < $email_contents  2>&1)
-					if [[ "$email_response" == "" ]]; then
-						echo -e "\nEmail Sent Successfully indicating Target is Unavailable and script will not run" |& tee -a $email_contents
-						current_time=$( date +%s )
-						echo "$current_time" > $last_time_email_sent
-						email_time_diff=0
-					else
-						echo -e "\n\nWARNING -- An error occurred while sending email. The error was: $email_response\n\n" |& tee $email_contents
-					fi	
+			if check_internet; then
+				#send an email indicating script config file is missing and script will not run
+				mailbody="$now - Warning UPS SNMP Monitoring Failed for device IP $nas_url - Target is Unavailable "
+				echo "from: $from_email_address " > $email_contents
+				echo "to: $email_address " >> $email_contents
+				echo "subject: Warning UPS SNMP Monitoring Failed for device IP $nas_url - Target is Unavailable " >> $email_contents
+				echo "" >> $email_contents
+				echo $mailbody >> $email_contents
+				
+				if [[ "$email_address" == "" || "$from_email_address" == "" ]];then
+					echo -e "\n\nNo email address information is configured, Cannot send an email indicating Target is Unavailable and script will not run"
 				else
-					echo "Unable to send email, \"sendmail\" command is unavailable"
+					if [ $sendmail_installed -eq 1 ]; then
+						email_response=$(sendmail -t < $email_contents  2>&1)
+						if [[ "$email_response" == "" ]]; then
+							echo -e "\nEmail Sent Successfully indicating Target is Unavailable and script will not run" |& tee -a $email_contents
+							current_time=$( date +%s )
+							echo "$current_time" > $last_time_email_sent
+							email_time_diff=0
+						else
+							echo -e "\n\nWARNING -- An error occurred while sending email. The error was: $email_response\n\n" |& tee $email_contents
+						fi	
+					else
+						echo "Unable to send email, \"sendmail\" command is unavailable"
+					fi
 				fi
+			else
+				echo "Internet is not available, skipping sending email"
 			fi
 		else
 			echo -e "\n\nAnother email notification will be sent in $(( 60 - $email_time_diff)) Minutes"
@@ -399,30 +420,34 @@ else
 	now=$(date +"%T")
 	echo "Configuration file for script \"${0##*/}\" is missing, skipping script and will send alert email every 60 minuets"
 	if [ $email_time_diff -ge 60 ]; then
-		#send an email indicating script config file is missing and script will not run
-		mailbody="$now - Warning UPS Monitoring Failed for script \"${0##*/}\" - Configuration file is missing "
-		echo "from: $from_email_address " > $email_contents
-		echo "to: $email_address " >> $email_contents
-		echo "subject: Warning UPS Monitoring Failed for script \"${0##*/}\" - Configuration file is missing " >> $email_contents
-		echo "" >> $email_contents
-		echo $mailbody >> $email_contents
-		
-		if [[ "$email_address" == "" || "$from_email_address" == "" ]];then
-			echo -e "\n\nNo email address information is configured, Cannot send an email indicating script \"${0##*/}\" config file is missing and script will not run"
-		else
-			if [ $sendmail_installed -eq 1 ]; then
-				email_response=$(sendmail -t < $email_contents  2>&1)
-				if [[ "$email_response" == "" ]]; then
-					echo -e "\nEmail Sent Successfully indicating script \"${0##*/}\" config file is missing and script will not run" |& tee -a $email_contents
-					current_time=$( date +%s )
-					echo "$current_time" > $last_time_email_sent
-					email_time_diff=0
-				else
-					echo -e "\n\nWARNING -- An error occurred while sending email. The error was: $email_response\n\n" |& tee $email_contents
-				fi	
+		if check_internet; then
+			#send an email indicating script config file is missing and script will not run
+			mailbody="$now - Warning UPS Monitoring Failed for script \"${0##*/}\" - Configuration file is missing "
+			echo "from: $from_email_address " > $email_contents
+			echo "to: $email_address " >> $email_contents
+			echo "subject: Warning UPS Monitoring Failed for script \"${0##*/}\" - Configuration file is missing " >> $email_contents
+			echo "" >> $email_contents
+			echo $mailbody >> $email_contents
+			
+			if [[ "$email_address" == "" || "$from_email_address" == "" ]];then
+				echo -e "\n\nNo email address information is configured, Cannot send an email indicating script \"${0##*/}\" config file is missing and script will not run"
 			else
-				echo "Unable to send email, \"sendmail\" command is unavailable"
+				if [ $sendmail_installed -eq 1 ]; then
+					email_response=$(sendmail -t < $email_contents  2>&1)
+					if [[ "$email_response" == "" ]]; then
+						echo -e "\nEmail Sent Successfully indicating script \"${0##*/}\" config file is missing and script will not run" |& tee -a $email_contents
+						current_time=$( date +%s )
+						echo "$current_time" > $last_time_email_sent
+						email_time_diff=0
+					else
+						echo -e "\n\nWARNING -- An error occurred while sending email. The error was: $email_response\n\n" |& tee $email_contents
+					fi	
+				else
+					echo "Unable to send email, \"sendmail\" command is unavailable"
+				fi
 			fi
+		else
+			echo "Internet is not available, skipping sending email"
 		fi
 	else
 		echo -e "\n\nAnother email notification will be sent in $(( 60 - $email_time_diff)) Minutes"
